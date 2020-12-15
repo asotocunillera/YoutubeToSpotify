@@ -2,6 +2,8 @@ from decouple import config
 from apiclient.discovery import build
 import spotipy
 import pandas as pd
+from openpyxl import load_workbook
+
 class YoutubetoSpoti(object):
 
     def __init__(self, secret_keys):
@@ -54,7 +56,7 @@ class YoutubetoSpoti(object):
             for replacement in self.REPLACEMENTS:
                 if replacement in video:
                     video = video.replace(replacement,'')
-            title = video.rsplit(' - ')[0] + ' ' + video.rsplit(' - ')[1]
+            title = (video.rsplit(' - ')[0] + ' ' + video.rsplit(' - ')[1]).strip()
             titles.append(title)
         return titles
 
@@ -70,8 +72,8 @@ class YoutubetoSpoti(object):
     def sp_search(self, titles):
         print('[INFO] Searching filtered titles in Spotify...')
         sp_found_IDs = []
-        database_found = []
-        database_not_found = []
+        database_found = pd.DataFrame(columns= ['YOUTUBE', 'SPOTIFY'])
+        database_not_found = pd.DataFrame(columns = ['YOUTUBE'])
         for title in titles:
             sp_search = self.sp_client.search(
                 title,
@@ -87,7 +89,7 @@ class YoutubetoSpoti(object):
                 track = self.sp_client.track(track_ID)
                 track_artists = ', '.join([i['name'] for i in track['album']['artists']])
                 track = track_artists + ' - ' + track['name']
-                database_found.append((title, track))
+                database_found=database_found.append(pd.DataFrame([[title, track]], columns = ['YOUTUBE', 'SPOTIFY']))
             else: #Song not found, reducing name lenght and trying again
                 aux_title = title
                 while(len(aux_title)>=15):
@@ -106,45 +108,63 @@ class YoutubetoSpoti(object):
                         track = self.sp_client.track(track_ID)
                         track_artists = ', '.join([i['name'] for i in track['album']['artists']])
                         track = track_artists + ' - ' + track['name']
-                        database_found.append((title, track))
+                        database_found=database_found.append(pd.DataFrame([[title, track]], columns = ['YOUTUBE', 'SPOTIFY']))
                         break
                 if sp_search ['tracks']['total'] == 0: #Song not found
                     print(f'[WARNING] Track not found {title}')
-                    database_not_found.append(title)
-
+                    database_not_found=database_not_found.append(title)
         return sp_found_IDs, database_found, database_not_found
 
-    def addto_sp_playlist(self, sp_tracks_found_ID):
-        tracks_to_add = []
-        tracks = []
+    def add_to_sp_playlist(self, sp_found_IDs, SP_PLAYLIST_ID):
+        self.sp_client.user_playlist_add_tracks(
+            user=self.SP_USERNAME,
+            playlist_id=SP_PLAYLIST_ID,
+            tracks=sp_found_IDs,
+            position=0
+        )
+        print(f'[INFO] Added {len(sp_found_IDs)} songs successfully!')
 
-        with open('SpotifyTracks.txt','r') as f:
-            playlist_titles = f.read().splitlines()
-        playlist_titles = playlist_titles[1:]
 
-        for track_ID in sp_tracks_found:
-            track = self.sp_client.track(track_ID)
-            track_artists = ', '.join([i['name'] for i in track['album']['artists']])
-            track = track_artists + ' - ' + track['name']
 
-            if track not in playlist_titles:
-                print(f'[INFO] Adding track: {track}')
-                tracks_to_add.append(track_ID)
-                tracks.append(track)
-            else:
-                print(f'[INFO] Track already in playlist: {track}')
+def main():
 
-# def main():
+    YT_API_KEY = config('YT_API_KEY')
+    SP_USERNAME = config('SP_USERNAME')
+    SP_CLIENT_ID = config('SP_CLIENT_ID')
+    SP_CLIENT_SECRET = config('SP_CLIENT_SECRET')
+    SP_SCOPE = config('SP_SCOPE')
 
-YT_API_KEY = config('YT_API_KEY')
-SP_USERNAME = config('SP_USERNAME')
-SP_CLIENT_ID = config('SP_CLIENT_ID')
-SP_CLIENT_SECRET = config('SP_CLIENT_SECRET')
-SP_SCOPE = config('SP_SCOPE')
+    YT_PLAYLIST_ID = config('YT_PLAYLIST_ID') 
+    SP_PLAYLIST_ID = config('SP_PLAYLIST_ID') 
 
-YT_PLAYLIST_ID = config('YT_PLAYLIST_ID')
+    book_name = 'Tracks.xlsx'
+    book = load_workbook(book_name)
+    writer = pd.ExcelWriter(book_name, engine ='openpyxl')
+    writer.book = book
+    writer.sheets = dict((ws.title, ws) for ws in book.worksheets)
 
-SECRET_KEYS = [YT_API_KEY, SP_USERNAME, SP_CLIENT_ID, SP_CLIENT_SECRET, SP_SCOPE]
-myYoutubetoSpoti = YoutubetoSpoti(SECRET_KEYS)
-titles = myYoutubetoSpoti.yt_playlist_tracks(YT_PLAYLIST_ID)
-(sp_found_IDs, database_found, database_not_found) = myYoutubetoSpoti.sp_search(titles)
+    xlsx_database_found = pd.read_excel(writer, sheet_name='Found', engine='openpyxl')
+    xlsx_database_not_found = pd.read_excel(writer, sheet_name='Not Found', engine='openpyxl')
+
+    SECRET_KEYS = [YT_API_KEY, SP_USERNAME, SP_CLIENT_ID, SP_CLIENT_SECRET, SP_SCOPE]
+    myYoutubetoSpoti = YoutubetoSpoti(SECRET_KEYS)
+
+    titles = myYoutubetoSpoti.yt_playlist_tracks(YT_PLAYLIST_ID)
+    titles = [title for title in titles if all([title not in xlsx_database_found['YOUTUBE'].unique(),title not in xlsx_database_not_found['YOUTUBE'].unique()])]
+
+    if titles:
+        (sp_found_IDs, sp_found_tracks, sp_not_found_tracks) = myYoutubetoSpoti.sp_search(titles)
+        myYoutubetoSpoti.add_to_sp_playlist(sp_found_IDs, SP_PLAYLIST_ID)
+
+        print('[INFO] Saving new songs in database...')
+        xlsx_database_not_found = xlsx_database_not_found.append(sp_not_found_tracks, ignore_index=True)
+        xlsx_database_found = xlsx_database_found.append(sp_found_tracks, ignore_index=True)
+        xlsx_database_found.to_excel(writer, sheet_name='Found', index=False)
+        xlsx_database_not_found.to_excel(writer, sheet_name='Not Found', index=False)
+        writer.save()
+        print('[INFO] Done!')
+    else:
+        print('[INFO] No Tracks to add!')
+
+if __name__=='__main__':
+    main()
