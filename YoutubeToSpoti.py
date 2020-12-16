@@ -1,12 +1,13 @@
 from decouple import config
 from apiclient.discovery import build
-import spotipy
-import pandas as pd
 from openpyxl import load_workbook
+import spotipy
+import argparse
+import pandas as pd
 
 class YoutubetoSpoti(object):
 
-    def __init__(self, secret_keys):
+    def __init__(self, secret_keys , MAX_RESULTS):
         #Youtube keys
         self.YT_API_KEY = secret_keys[0]
         #Spotify keys
@@ -15,7 +16,7 @@ class YoutubetoSpoti(object):
         self.SP_CLIENT_SECRET = secret_keys[3]
         self.SP_SCOPE = secret_keys[4]
 
-        self.MAX_RESULTS = 50
+        self.MAX_RESULTS = MAX_RESULTS
         #name of youtube songs usually has words and characters not included in Spotify
         self.REPLACEMENTS = ['(', ')', '[', ']', '/',' ft', ' feat', ' vs', ',', 'official', ' audio',
         'lyrics', 'lyric', 'video', ' hd ', 'edit', 'music', '. ']
@@ -56,7 +57,10 @@ class YoutubetoSpoti(object):
             for replacement in self.REPLACEMENTS:
                 if replacement in video:
                     video = video.replace(replacement,'')
-            title = (video.rsplit(' - ')[0] + ' ' + video.rsplit(' - ')[1]).strip()
+            try:
+                title = ((video.rsplit('-')[0]).strip() + ' ' + (video.rsplit('-')[1]).strip()).strip()
+            except:
+                print(f'[WARNING] Seems not a song: {video}')
             titles.append(title)
         return titles
 
@@ -66,7 +70,7 @@ class YoutubetoSpoti(object):
             forUsername = channel_username).execute()
         print(f'[INFO] Looking for uploads in {channel_username}...')
         channel_uploads = channels_response['items'][-1]['contentDetails']['relatedPlaylists']['uploads']
-        titles = yt_playlist_tracks(channel_uploads)
+        titles = self.yt_playlist_tracks(channel_uploads)
         return titles
 
     def sp_search(self, titles):
@@ -124,9 +128,22 @@ class YoutubetoSpoti(object):
         )
         print(f'[INFO] Added {len(sp_found_IDs)} songs successfully!')
 
+def get_args(info):
+    parser = argparse.ArgumentParser(
+        description='{desc}'.format(** info),
+        epilog='{license}, {email}'.format(** info)
+    )
+    parser.add_argument('-o', '--option',
+        required=True,
+        help = "Choose between Playlist or Channel Uploads [p/c]"
+    )
+    parser.add_argument('-r' ,'--results',
+        default=50,
+        help='Max results to track [default = 50]'
+    )
+    return vars(parser.parse_args())
 
-
-def main():
+def main(args):
 
     YT_API_KEY = config('YT_API_KEY')
     SP_USERNAME = config('SP_USERNAME')
@@ -134,8 +151,9 @@ def main():
     SP_CLIENT_SECRET = config('SP_CLIENT_SECRET')
     SP_SCOPE = config('SP_SCOPE')
 
-    YT_PLAYLIST_ID = config('YT_PLAYLIST_ID') 
     SP_PLAYLIST_ID = config('SP_PLAYLIST_ID') 
+
+    MAX_RESULTS = int(args['results'])
 
     book_name = 'Tracks.xlsx'
     book = load_workbook(book_name)
@@ -147,11 +165,27 @@ def main():
     xlsx_database_not_found = pd.read_excel(writer, sheet_name='Not Found', engine='openpyxl')
 
     SECRET_KEYS = [YT_API_KEY, SP_USERNAME, SP_CLIENT_ID, SP_CLIENT_SECRET, SP_SCOPE]
-    myYoutubetoSpoti = YoutubetoSpoti(SECRET_KEYS)
+    myYoutubetoSpoti = YoutubetoSpoti(SECRET_KEYS, MAX_RESULTS)
+    titles = []
 
-    titles = myYoutubetoSpoti.yt_playlist_tracks(YT_PLAYLIST_ID)
+    if args['option'] == 'p': #Playlist METHOD
+        #By default I choose my unique YT_PLAYLIST
+        YT_PLAYLIST_ID = config('YT_PLAYLIST_ID') 
+        titles = myYoutubetoSpoti.yt_playlist_tracks(YT_PLAYLIST_ID)
+    else: #Channels Uploads
+        channels = []
+        while True:
+            channel = input("Channel Username (q to exit): ")
+            if channel == 'q':
+                break
+            channels.append(channel)
+        for channel in channels:
+            try:
+                titles.extend(myYoutubetoSpoti.yt_channel_tracks(channel))
+            except:
+                print(f'[WARNING] Channel Username: {channel} not valid')
+
     titles = [title for title in titles if all([title not in xlsx_database_found['YOUTUBE'].unique(),title not in xlsx_database_not_found['YOUTUBE'].unique()])]
-
     if titles:
         (sp_found_IDs, sp_found_tracks, sp_not_found_tracks) = myYoutubetoSpoti.sp_search(titles)
         myYoutubetoSpoti.add_to_sp_playlist(sp_found_IDs, SP_PLAYLIST_ID)
@@ -167,4 +201,16 @@ def main():
         print('[INFO] No Tracks to add!')
 
 if __name__=='__main__':
-    main()
+
+    info =  {
+        'name': 'YoutubeToSpoti',
+        'desc': 'Save Youtube music (from a playlist or channel uploads) into a Spotify Playlist',
+        'author': 'Álvaro Soto Cunillera',
+        'email': 'asotocunillera@gmail.com',
+        'year': 2020,
+        'version': [1,0,0],
+        'license': 'Álvaro Soto Cunillera'
+    }
+    args = get_args(info)
+
+    main(args)
